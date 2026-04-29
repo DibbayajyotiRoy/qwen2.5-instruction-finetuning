@@ -1,0 +1,120 @@
+model:
+  base_model: "unsloth/Qwen2.5-7B-Instruct-bnb-4bit"
+  revision: "main"
+  max_seq_length: 2048
+  dtype: null  # auto-detect; set to "float16" or "bfloat16" if needed
+  load_in_4bit: true
+  use_gradient_checkpointing: "unsloth"
+  use_rslora: false
+  trust_remote_code: false
+
+lora:
+  r: 64
+  alpha: 128
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  lora_dropout: 0.0
+  bias: "none"
+  use_gradient_checkpointing: "unsloth"
+  random_state: 42
+  use_rslora: false
+  loftq_config: null
+
+training:
+  output_dir: "outputs/qlora"
+  run_name: "qwen25-7b-qlora-run1"
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1
+  max_steps: -1
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  lr_scheduler_type: "cosine"
+  logging_steps: 10
+  eval_strategy: "steps"
+  eval_steps: 100
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 3
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+  early_stopping_patience: 3
+  seed: 42
+  bf16: true
+  fp16: false
+  optim: "adamw_8bit"
+  group_by_length: true
+  report_to: "tensorboard"
+  remove_unused_columns: false
+  dataset_text_field: "text"
+  packing: false
+
+data:
+  dataset_name: "yahma/alpaca-cleaned"
+  dataset_config: null
+  split: "train"
+  eval_split: "validation"
+  eval_size: 0.05
+  max_samples: null
+  instruction_field: "instruction"
+  input_field: "input"
+  output_field: "output"
+  template: |
+    Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+    ### Instruction:
+    {instruction}
+
+    ### Input:
+    {input}
+
+    ### Response:
+    {output}
+  streaming: false
+  cache_dir: "data/cache"
+
+  # Data-centric efficiency: curate for concise, high-quality examples and
+  # optionally distill from a larger teacher model (chain-of-thought / soft labels).
+  curation:
+    enabled: false
+    keep_top_fraction: 0.75
+    max_tokens_per_word: 2.5
+    min_tokens_per_example: 4
+
+  distillation:
+    enabled: false
+    teacher_model: "Qwen/Qwen2.5-32B-Instruct"
+    teacher_revision: "main"
+    max_new_tokens: 512
+    temperature: 0.7
+
+export:
+  output_dir: "outputs/gguf"
+  quantization_methods:
+    - "q4_k_m"
+    - "q8_0"
+  push_to_hub: false
+  hub_model_id: null
+
+inference:
+  max_new_tokens: 512
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+  repetition_penalty: 1.1
+  do_sample: true
+
+benchmark:
+  prompts_file: "data/benchmark_prompts.jsonl"
+  num_runs: 3
+  max_tokens: 256
+  batch_size: 1
