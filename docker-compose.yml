@@ -1,0 +1,55 @@
+services:
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_FLASH_ATTN: "true"
+    image: qwen25-finetune:latest
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - HF_TOKEN=${HF_TOKEN}
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      - WANDB_PROJECT=${WANDB_PROJECT:-qwen25-instruction-finetuning}
+    volumes:
+      - ./outputs:/workspace/outputs
+      - ./data:/workspace/data
+      - ./cache:/workspace/cache
+    command: >
+      bash scripts/run_training.sh configs/qlora_config.yaml
+
+  inference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen25-finetune:latest
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - ./outputs:/workspace/outputs
+      - ./data:/workspace/data
+      - ./cache:/workspace/cache
+    command: >
+      python -m src.inference
+      --model_path outputs/qlora/final_merged
+      --prompt "Explain quantum computing in one paragraph."
+
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen25-finetune:latest
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - ./outputs:/workspace/outputs
+      - ./data:/workspace/data
+    command: >
+      bash scripts/run_benchmark.sh
+      outputs/qlora/final_merged
+      outputs/gguf/qwen25-q4_k_m.gguf
+      configs/inference_config.yaml
