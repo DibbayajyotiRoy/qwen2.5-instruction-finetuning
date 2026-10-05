@@ -89,6 +89,17 @@ data:
     keep_top_fraction: 0.75
     max_tokens_per_word: 2.5
     min_tokens_per_example: 4
+    deduplication:
+      enabled: false
+      exact: true
+      near: false
+      fields:
+        - "instruction"
+        - "input"
+        - "output"
+      near_threshold: 0.85
+      num_perm: 128
+      shingle_size: 5
 
   distillation:
     enabled: false

@@ -9,11 +9,13 @@ Implements ideas from recent work on data-centric efficiency:
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import numpy as np
 import torch
 from datasets import Dataset
+from datasketch import MinHash, MinHashLSH
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 
@@ -94,6 +96,105 @@ def compute_example_scores(
     return {"concision_score": scores}
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize text for duplicate detection.
+
+    Lowercases, strips leading/trailing whitespace, and collapses internal
+    whitespace so trivial formatting differences do not evade exact matching.
+    """
+    return " ".join(text.lower().split())
+
+
+def _dedup_signature(example: dict[str, Any], fields: list[str]) -> str:
+    """Build a normalized signature from the selected fields."""
+    return " || ".join(_normalize_text(str(example.get(field, ""))) for field in fields)
+
+
+def deduplicate_exact(
+    dataset: Dataset,
+    fields: list[str] | None = None,
+) -> Dataset:
+    """Remove exact duplicates based on a hash of selected fields.
+
+    The first occurrence is kept; later identical examples are dropped.
+
+    Args:
+        dataset: Input dataset.
+        fields: Columns to use for the duplicate key. Defaults to the
+            standard instruction-tuning triplet.
+
+    Returns:
+        Dataset with exact duplicates removed.
+    """
+    fields = fields or ["instruction", "input", "output"]
+    seen: set[str] = set()
+
+    def is_unique(example: dict[str, Any]) -> bool:
+        signature = _dedup_signature(example, fields)
+        key = hashlib.sha256(signature.encode("utf-8")).hexdigest()
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    return dataset.filter(is_unique, desc="Removing exact duplicates")
+
+
+def _shingles(text: str, k: int = 5) -> set[str]:
+    """Return word-level k-gram shingles for near-duplicate detection."""
+    words = _normalize_text(text).split()
+    if len(words) < k:
+        return {" ".join(words)} if words else set()
+    return {" ".join(words[i : i + k]) for i in range(len(words) - k + 1)}
+
+
+def deduplicate_near(
+    dataset: Dataset,
+    fields: list[str] | None = None,
+    threshold: float = 0.85,
+    num_perm: int = 128,
+    shingle_size: int = 5,
+) -> Dataset:
+    """Remove near-duplicates using MinHash LSH.
+
+    Processes examples in order and keeps the first example of each detected
+    near-duplicate cluster. Near-duplicates are identified by approximate
+    Jaccard similarity over word-level shingles.
+
+    Args:
+        dataset: Input dataset.
+        fields: Columns to use for the duplicate key.
+        threshold: Jaccard similarity threshold above which two examples
+            are considered near-duplicates.
+        num_perm: Number of MinHash permutations. Higher values give more
+            accurate estimates at the cost of memory and CPU.
+        shingle_size: Word-level n-gram size.
+
+    Returns:
+        Dataset with near-duplicates removed.
+    """
+    fields = fields or ["instruction", "input", "output"]
+    keep: list[bool] = []
+    lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
+
+    for example in dataset:
+        text = _dedup_signature(example, fields)
+        min_hash = MinHash(num_perm=num_perm)
+        for shingle in _shingles(text, k=shingle_size):
+            min_hash.update(shingle.encode("utf-8"))
+
+        # If any previously-kept example is similar, drop this one.
+        if lsh.query(min_hash):
+            keep.append(False)
+            continue
+
+        keep.append(True)
+        lsh.insert(len(keep) - 1, min_hash)
+
+    keep_indices = [i for i, should_keep in enumerate(keep) if should_keep]
+    return dataset.select(keep_indices)
+
+
 def curate_dataset(
     dataset: Dataset,
     tokenizer: PreTrainedTokenizer,
@@ -101,8 +202,11 @@ def curate_dataset(
     keep_top_fraction: float = 0.8,
     max_tokens_per_word: float | None = None,
     min_tokens_per_example: int = 4,
+    deduplication: dict[str, Any] | None = None,
 ) -> Dataset:
     """Curate a dataset by selecting concise, non-degenerate examples.
+
+    Applies optional deduplication first, then concision-based filtering.
 
     Args:
         dataset: Input dataset.
@@ -111,10 +215,28 @@ def curate_dataset(
         keep_top_fraction: Fraction of examples to keep by concision.
         max_tokens_per_word: Hard cutoff for tokens-per-word (verbosity).
         min_tokens_per_example: Minimum token length to avoid empty answers.
+        deduplication: Optional dict controlling exact / near-duplicate removal.
+            Supported keys: ``enabled`` (bool), ``fields`` (list[str]),
+            ``exact`` (bool), ``near`` (bool), ``near_threshold`` (float),
+            ``num_perm`` (int), ``shingle_size`` (int).
 
     Returns:
         Curated dataset.
     """
+    deduplication = deduplication or {}
+    if deduplication.get("enabled", False):
+        fields = deduplication.get("fields", ["instruction", "input", "output"])
+        if deduplication.get("exact", True):
+            dataset = deduplicate_exact(dataset, fields=fields)
+        if deduplication.get("near", False):
+            dataset = deduplicate_near(
+                dataset,
+                fields=fields,
+                threshold=deduplication.get("near_threshold", 0.85),
+                num_perm=deduplication.get("num_perm", 128),
+                shingle_size=deduplication.get("shingle_size", 5),
+            )
+
     scored = dataset.map(
         lambda ex: compute_example_scores(ex, tokenizer, response_field),
         batched=True,
@@ -239,6 +361,7 @@ def build_distillation_dataset(
             keep_top_fraction=curation_cfg.get("keep_top_fraction", 0.8),
             max_tokens_per_word=curation_cfg.get("max_tokens_per_word"),
             min_tokens_per_example=curation_cfg.get("min_tokens_per_example", 4),
+            deduplication=curation_cfg.get("deduplication", {}),
         )
 
     distillation_cfg = data_config.get("distillation", {})

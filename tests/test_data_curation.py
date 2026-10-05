@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.data_curation import concision_score, curate_dataset
+from src.data_curation import concision_score, curate_dataset, deduplicate_exact, deduplicate_near
 
 
 class DummyTokenizer:
@@ -55,3 +55,73 @@ def test_curate_dataset_filters_verbose() -> None:
         min_tokens_per_example=1,
     )
     assert len(curated) <= 2
+
+
+def test_deduplicate_exact_removes_duplicates() -> None:
+    """Exact dedup should keep the first occurrence and drop later copies."""
+    from datasets import Dataset
+
+    data = {
+        "instruction": ["q1", "q2", "q1"],
+        "input": ["", "ctx", ""],
+        "output": ["a", "b", "a"],
+    }
+    dataset = Dataset.from_dict(data)
+    deduped = deduplicate_exact(dataset)
+    assert len(deduped) == 2
+    assert list(deduped["instruction"]) == ["q1", "q2"]
+
+
+def test_deduplicate_exact_ignores_formatting_case() -> None:
+    """Exact dedup should treat case/whitespace-normalised copies as duplicates."""
+    from datasets import Dataset
+
+    data = {
+        "instruction": ["Q1", "q1"],
+        "input": ["  some context  ", "some context"],
+        "output": ["A", "a"],
+    }
+    dataset = Dataset.from_dict(data)
+    deduped = deduplicate_exact(dataset)
+    assert len(deduped) == 1
+
+
+def test_deduplicate_near_removes_near_duplicates() -> None:
+    """Near-dedup should drop examples that differ only by a few words."""
+    from datasets import Dataset
+
+    base = " ".join(["The quick brown fox jumps over the lazy dog"] * 20)
+    variant = base + " indeed"
+    different = " ".join(["Astronomy is the scientific study of celestial objects and phenomena"] * 20)
+
+    data = {
+        "instruction": ["q1", "q1", "q2"],
+        "input": ["", "", ""],
+        "output": [base, variant, different],
+    }
+    dataset = Dataset.from_dict(data)
+    deduped = deduplicate_near(dataset, threshold=0.8, num_perm=128)
+    assert len(deduped) == 2
+    assert different in list(deduped["output"])
+
+
+def test_curate_dataset_applies_deduplication() -> None:
+    """curate_dataset should apply deduplication when configured."""
+    from datasets import Dataset
+
+    tokenizer = DummyTokenizer()
+    data = {
+        "instruction": ["q1", "q1", "q2"],
+        "input": ["", "", ""],
+        "output": ["a", "a", "b"],
+    }
+    dataset = Dataset.from_dict(data)
+    curated = curate_dataset(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        response_field="output",
+        keep_top_fraction=1.0,
+        min_tokens_per_example=1,
+        deduplication={"enabled": True, "exact": True, "near": False},
+    )
+    assert len(curated) == 2
