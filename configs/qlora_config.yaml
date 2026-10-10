@@ -100,6 +100,13 @@ data:
       near_threshold: 0.85
       num_perm: 128
       shingle_size: 5
+    quality_scoring:
+      enabled: false
+      model: "Qwen/Qwen2.5-0.5B-Instruct"
+      max_length: 256
+      # Examples with perplexity above this value are discarded. Set to null to
+      # score but not filter (useful for analysis).
+      max_perplexity: null
 
   distillation:
     enabled: false

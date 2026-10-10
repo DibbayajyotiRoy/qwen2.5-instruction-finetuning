@@ -203,10 +203,12 @@ def curate_dataset(
     max_tokens_per_word: float | None = None,
     min_tokens_per_example: int = 4,
     deduplication: dict[str, Any] | None = None,
+    max_perplexity: float | None = None,
 ) -> Dataset:
     """Curate a dataset by selecting concise, non-degenerate examples.
 
-    Applies optional deduplication first, then concision-based filtering.
+    Applies optional deduplication first, then concision-based filtering and
+    optional perplexity filtering.
 
     Args:
         dataset: Input dataset.
@@ -219,6 +221,8 @@ def curate_dataset(
             Supported keys: ``enabled`` (bool), ``fields`` (list[str]),
             ``exact`` (bool), ``near`` (bool), ``near_threshold`` (float),
             ``num_perm`` (int), ``shingle_size`` (int).
+        max_perplexity: If provided and a ``quality_score`` column exists,
+            filter out examples whose perplexity exceeds this value.
 
     Returns:
         Curated dataset.
@@ -243,13 +247,19 @@ def curate_dataset(
         desc="Scoring concision",
     )
 
-    # Filter out empty / too-short responses.
+    # Filter out empty / too-short responses and optionally low-quality examples.
     def is_valid(ex: dict[str, Any]) -> bool:
         text = str(ex.get(response_field, "")).strip()
         tokens = tokenizer.encode(text, add_special_tokens=False)
         if len(tokens) < min_tokens_per_example:
             return False
-        return not (max_tokens_per_word is not None and ex["concision_score"] > max_tokens_per_word)
+        if max_tokens_per_word is not None and ex["concision_score"] > max_tokens_per_word:
+            return False
+        return not (
+            max_perplexity is not None
+            and ex.get("quality_score") is not None
+            and ex["quality_score"] > max_perplexity
+        )
 
     valid = scored.filter(is_valid, desc="Filtering degenerate examples")
 
@@ -266,6 +276,44 @@ def curate_dataset(
         curated = curated.remove_columns(["concision_score"])
 
     return curated
+
+
+@torch.inference_mode()
+def score_dataset_quality(
+    dataset: Dataset,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    response_field: str = "output",
+    max_length: int = 256,
+    device: torch.device | None = None,
+) -> Dataset:
+    """Add a perplexity-based quality score to every example.
+
+    Lower perplexity indicates higher likelihood under the reference model and
+    is used as a lightweight proxy for response quality. The new column is
+    named ``quality_score``.
+
+    Args:
+        dataset: Input dataset.
+        model: Reference language model.
+        tokenizer: Tokenizer.
+        response_field: Field containing the response text.
+        max_length: Max tokens to consider for perplexity.
+        device: Torch device.
+
+    Returns:
+        Dataset with an additional ``quality_score`` float column.
+    """
+    device = device or model.device
+    model.eval()
+
+    scores = []
+    for example in dataset:
+        text = str(example.get(response_field, "")).strip()
+        perplexity = quality_score(text, model, tokenizer, device, max_length=max_length)
+        scores.append(perplexity)
+
+    return dataset.add_column("quality_score", scores)
 
 
 @torch.inference_mode()
@@ -339,6 +387,7 @@ def build_distillation_dataset(
     teacher_model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
     data_config: dict[str, Any],
+    quality_model: PreTrainedModel | None = None,
 ) -> Dataset:
     """Convenience wrapper to curate and then augment with teacher labels.
 
@@ -347,6 +396,7 @@ def build_distillation_dataset(
         teacher_model: Teacher model.
         tokenizer: Tokenizer.
         data_config: Data configuration dict.
+        quality_model: Optional reference model for perplexity scoring.
 
     Returns:
         Curated dataset with teacher outputs.
@@ -354,6 +404,16 @@ def build_distillation_dataset(
     curated = dataset
     curation_cfg = data_config.get("curation", {})
     if curation_cfg.get("enabled", False):
+        quality_cfg = curation_cfg.get("quality_scoring", {})
+        if quality_cfg.get("enabled", False) and quality_model is not None:
+            curated = score_dataset_quality(
+                dataset=curated,
+                model=quality_model,
+                tokenizer=tokenizer,
+                response_field=data_config.get("output_field", "output"),
+                max_length=quality_cfg.get("max_length", 256),
+            )
+
         curated = curate_dataset(
             dataset=curated,
             tokenizer=tokenizer,
@@ -362,6 +422,7 @@ def build_distillation_dataset(
             max_tokens_per_word=curation_cfg.get("max_tokens_per_word"),
             min_tokens_per_example=curation_cfg.get("min_tokens_per_example", 4),
             deduplication=curation_cfg.get("deduplication", {}),
+            max_perplexity=quality_cfg.get("max_perplexity") if quality_cfg.get("enabled", False) else None,
         )
 
     distillation_cfg = data_config.get("distillation", {})

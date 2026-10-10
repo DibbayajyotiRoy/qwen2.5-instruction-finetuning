@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
-from src.data_curation import concision_score, curate_dataset, deduplicate_exact, deduplicate_near
+from typing import Any
+
+import torch
+
+from src.data_curation import (
+    concision_score,
+    curate_dataset,
+    deduplicate_exact,
+    deduplicate_near,
+    score_dataset_quality,
+)
+
+
+class DummyEncoding(dict):
+    """Tiny batch encoding with a .to() method like Transformers BatchEncoding."""
+
+    def to(self, device: Any) -> DummyEncoding:
+        return DummyEncoding({k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in self.items()})
 
 
 class DummyTokenizer:
     """Minimal tokenizer stand-in for curation tests."""
 
     eos_token = "</s>"
+    pad_token_id = 0
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         # Approximate BPE: one token per word plus an inter-word overhead so
@@ -20,6 +38,33 @@ class DummyTokenizer:
             if i > 0:
                 tokens.append(i + len(words))
         return tokens
+
+    def __call__(self, text: str, return_tensors: str | None = None, **kwargs: Any) -> DummyEncoding:
+        input_ids = self.encode(text)
+        if return_tensors == "pt":
+            return DummyEncoding({"input_ids": torch.tensor([input_ids])})
+        return DummyEncoding({"input_ids": [input_ids]})
+
+
+class DummyModelOutput:
+    """Fake model forward output carrying a scalar loss."""
+
+    def __init__(self, loss: torch.Tensor) -> None:
+        self.loss = loss
+
+
+class DummyModel:
+    """Tiny language-model stand-in that returns a fixed perplexity."""
+
+    def __init__(self, perplexity: float = 10.0) -> None:
+        self.device = torch.device("cpu")
+        self._perplexity = perplexity
+
+    def eval(self) -> DummyModel:
+        return self
+
+    def __call__(self, **kwargs: Any) -> DummyModelOutput:
+        return DummyModelOutput(torch.log(torch.tensor(self._perplexity)))
 
 
 def test_concision_score() -> None:
@@ -125,3 +170,46 @@ def test_curate_dataset_applies_deduplication() -> None:
         deduplication={"enabled": True, "exact": True, "near": False},
     )
     assert len(curated) == 2
+
+
+def test_score_dataset_quality_adds_perplexity() -> None:
+    """score_dataset_quality should add a quality_score column with expected perplexity."""
+    from datasets import Dataset
+
+    data = {
+        "instruction": ["q1", "q2"],
+        "input": ["", ""],
+        "output": ["a", "b c d"],
+    }
+    dataset = Dataset.from_dict(data)
+    tokenizer = DummyTokenizer()
+    model = DummyModel(perplexity=7.0)
+
+    scored = score_dataset_quality(dataset, model, tokenizer, response_field="output")
+    assert "quality_score" in scored.column_names
+    assert all(abs(score - 7.0) < 1e-6 for score in scored["quality_score"])
+
+
+def test_curate_dataset_filters_by_max_perplexity() -> None:
+    """curate_dataset should drop examples above max_perplexity when quality_score exists."""
+    from datasets import Dataset
+
+    data = {
+        "instruction": ["q1", "q2", "q3"],
+        "input": ["", "", ""],
+        "output": ["a", "b", "c"],
+        "quality_score": [5.0, 15.0, 10.0],
+    }
+    dataset = Dataset.from_dict(data)
+    tokenizer = DummyTokenizer()
+
+    curated = curate_dataset(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        response_field="output",
+        keep_top_fraction=1.0,
+        min_tokens_per_example=1,
+        max_perplexity=10.0,
+    )
+    assert len(curated) == 2
+    assert 15.0 not in list(curated["quality_score"])
