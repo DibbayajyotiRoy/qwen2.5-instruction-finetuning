@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from datasets import DatasetDict
 from transformers import (
     EarlyStoppingCallback,
     Trainer,
     TrainingArguments,
 )
 
-from src.data import build_dataset
+from src.data import build_dataset, format_dataset, load_instruction_dataset
 from src.data_curation import build_distillation_dataset
 from src.logging_utils import get_logger, setup_logging
 from src.model import build_lora_model, load_base_model
@@ -121,26 +122,70 @@ def train(config: dict[str, Any]) -> Trainer:
             revision=distillation_cfg.get("teacher_revision", "main"),
         )
 
+    # Optional: load a reference model for perplexity-based quality scoring.
+    quality_model = None
+    curation_cfg = config["data"].get("curation", {})
+    quality_cfg = curation_cfg.get("quality_scoring", {})
+    if curation_cfg.get("enabled", False) and quality_cfg.get("enabled", False) and quality_cfg.get("model"):
+        logger.info("Loading quality model for curation: %s", quality_cfg["model"])
+        quality_model, _ = load_base_model(
+            model_name=quality_cfg["model"],
+            max_seq_length=config["model"]["max_seq_length"],
+            dtype=config["model"].get("dtype"),
+            load_in_4bit=config["model"].get("load_in_4bit", True),
+            use_gradient_checkpointing=False,
+            trust_remote_code=config["model"].get("trust_remote_code", False),
+            revision=quality_cfg.get("revision", "main"),
+        )
+
     logger.info("Building datasets")
-    target_field = "teacher_output" if distillation_cfg.get("enabled", False) else None
-    dataset = build_dataset(
-        data_config=config["data"],
-        tokenizer=tokenizer,
-        eval_size=config["data"].get("eval_size", 0.05),
-        seed=seed,
-        target_field=target_field,
+    raw_dataset = load_instruction_dataset(
+        dataset_name=config["data"]["dataset_name"],
+        config_name=config["data"].get("dataset_config"),
+        split=config["data"].get("split", "train"),
+        cache_dir=config["data"].get("cache_dir"),
+        streaming=config["data"].get("streaming", False),
+        max_samples=config["data"].get("max_samples"),
     )
 
-    # Apply concision / quality curation and optionally teacher-label distillation.
-    curation_cfg = config["data"].get("curation", {})
+    eval_size = config["data"].get("eval_size", 0.05)
+    streaming = config["data"].get("streaming", False)
+    if eval_size and eval_size > 0 and not streaming:
+        split_result = raw_dataset.train_test_split(test_size=eval_size, seed=seed)
+        train_dataset_raw = split_result["train"]
+        eval_dataset_raw = split_result["test"]
+    else:
+        train_dataset_raw = raw_dataset
+        eval_dataset_raw = None
+
+    # Apply concision / quality curation and optionally teacher-label distillation
+    # on the *raw* dataset so fields like instruction/input/output are available.
     if curation_cfg.get("enabled", False) or distillation_cfg.get("enabled", False):
-        dataset["train"] = build_distillation_dataset(
-            dataset=dataset["train"],
+        train_dataset_raw = build_distillation_dataset(
+            dataset=train_dataset_raw,
             teacher_model=teacher_model,
             tokenizer=tokenizer,
             data_config=config["data"],
+            quality_model=quality_model,
         )
-        logger.info("After curation/distillation: %d train examples", len(dataset["train"]))
+        logger.info("After curation/distillation: %d train examples", len(train_dataset_raw))
+
+    target_field = "teacher_output" if distillation_cfg.get("enabled", False) else None
+    dataset = DatasetDict({
+        "train": format_dataset(
+            dataset=train_dataset_raw,
+            data_config=config["data"],
+            tokenizer=tokenizer,
+            target_field=target_field,
+        ),
+    })
+    if eval_dataset_raw is not None:
+        dataset["validation"] = format_dataset(
+            dataset=eval_dataset_raw,
+            data_config=config["data"],
+            tokenizer=tokenizer,
+            target_field=None,
+        )
 
     def tokenize_function(examples: dict[str, Any]) -> dict[str, Any]:
         texts = examples[config["training"].get("dataset_text_field", "text")]

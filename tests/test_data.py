@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-from src.data import build_dataset, format_alpaca_example, load_instruction_dataset
+from src.data import build_dataset, format_alpaca_example, format_dataset, load_instruction_dataset
 
 
 class DummyTokenizer:
@@ -44,7 +46,7 @@ def test_load_instruction_dataset_streaming() -> None:
 
 @pytest.mark.slow
 @pytest.mark.requires_model
-def test_build_dataset_splits(sample_data_config) -> None:
+def test_build_dataset_splits(sample_data_config: Any) -> None:
     """Test that build_dataset produces train and validation splits."""
     sample_data_config["max_samples"] = 20
     tokenizer = DummyTokenizer()
@@ -53,3 +55,25 @@ def test_build_dataset_splits(sample_data_config) -> None:
     assert "validation" in dataset
     assert len(dataset["validation"]) > 0
     assert "text" in dataset["train"].column_names
+
+
+def test_format_dataset_preserves_text_column() -> None:
+    """format_dataset should convert raw columns into a single text column."""
+    from datasets import Dataset
+
+    data = {
+        "instruction": ["q1", "q2"],
+        "input": ["", "ctx"],
+        "output": ["a", "b"],
+    }
+    config = {
+        "instruction_field": "instruction",
+        "input_field": "input",
+        "output_field": "output",
+        "template": "I:{instruction}\nIN:{input}\nO:{output}",
+    }
+    raw = Dataset.from_dict(data)
+    formatted = format_dataset(raw, config, tokenizer=DummyTokenizer())
+    assert "text" in formatted.column_names
+    assert "instruction" not in formatted.column_names
+    assert formatted[0]["text"] == "I:q1\nIN:\nO:a</s>"

@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from src.data_curation import (
+    build_distillation_dataset,
     concision_score,
     curate_dataset,
     deduplicate_exact,
@@ -170,6 +171,42 @@ def test_curate_dataset_applies_deduplication() -> None:
         deduplication={"enabled": True, "exact": True, "near": False},
     )
     assert len(curated) == 2
+
+
+def test_build_distillation_dataset_curates_raw_dataset() -> None:
+    """build_distillation_dataset should work on raw, unformatted columns."""
+    from datasets import Dataset
+
+    tokenizer = DummyTokenizer()
+    data = {
+        "instruction": ["q1", "q1", "q2", "q3"],
+        "input": ["", "", "", ""],
+        "output": ["a", "a", "b", "c c c c c c c c c c"],
+    }
+    dataset = Dataset.from_dict(data)
+    data_config = {
+        "instruction_field": "instruction",
+        "input_field": "input",
+        "output_field": "output",
+        "template": "{instruction}\n{input}\n{output}",
+        "curation": {
+            "enabled": True,
+            "keep_top_fraction": 1.0,
+            "max_tokens_per_word": 1.5,
+            "min_tokens_per_example": 1,
+            "deduplication": {"enabled": True, "exact": True, "near": False},
+        },
+        "distillation": {"enabled": False},
+    }
+    curated = build_distillation_dataset(
+        dataset=dataset,
+        teacher_model=None,
+        tokenizer=tokenizer,
+        data_config=data_config,
+    )
+    # One exact duplicate removed, verbose example removed.
+    assert len(curated) == 2
+    assert "instruction" in curated.column_names
 
 
 def test_score_dataset_quality_adds_perplexity() -> None:

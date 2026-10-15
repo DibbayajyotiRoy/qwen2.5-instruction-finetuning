@@ -86,6 +86,49 @@ def load_instruction_dataset(
     return dataset
 
 
+def format_dataset(
+    dataset: Dataset,
+    data_config: dict[str, Any],
+    tokenizer: Any,
+    eos_token: str = "",
+    target_field: str | None = None,
+) -> Dataset:
+    """Format a raw instruction dataset into model-ready text strings.
+
+    Args:
+        dataset: Raw instruction dataset.
+        data_config: Data configuration dictionary.
+        tokenizer: Tokenizer (used for EOS token if not provided).
+        eos_token: EOS token to append to each example.
+        target_field: Optional alternate response field for formatting
+            (e.g. ``teacher_output`` for distillation).
+
+    Returns:
+        Dataset with a single ``text`` column.
+    """
+    instruction_field = data_config.get("instruction_field", "instruction")
+    input_field = data_config.get("input_field", "input")
+    output_field = data_config.get("output_field", "output")
+    template = data_config.get("template", "{instruction}\n{output}")
+
+    if not eos_token and tokenizer is not None:
+        eos_token = tokenizer.eos_token or ""
+
+    return dataset.map(
+        lambda ex: format_alpaca_example(
+            ex,
+            template=template,
+            instruction_field=instruction_field,
+            input_field=input_field,
+            output_field=output_field,
+            eos_token=eos_token,
+            target_field=target_field,
+        ),
+        remove_columns=dataset.column_names,
+        desc="Formatting instructions",
+    )
+
+
 def build_dataset(
     data_config: dict[str, Any],
     tokenizer: Any,
@@ -114,14 +157,6 @@ def build_dataset(
     streaming = data_config.get("streaming", False)
     max_samples = data_config.get("max_samples")
 
-    instruction_field = data_config.get("instruction_field", "instruction")
-    input_field = data_config.get("input_field", "input")
-    output_field = data_config.get("output_field", "output")
-    template = data_config.get("template", "{instruction}\n{output}")
-
-    if not eos_token and tokenizer is not None:
-        eos_token = tokenizer.eos_token or ""
-
     dataset = load_instruction_dataset(
         dataset_name=dataset_name,
         config_name=config_name,
@@ -131,18 +166,12 @@ def build_dataset(
         max_samples=max_samples,
     )
 
-    dataset = dataset.map(
-        lambda ex: format_alpaca_example(
-            ex,
-            template=template,
-            instruction_field=instruction_field,
-            input_field=input_field,
-            output_field=output_field,
-            eos_token=eos_token,
-            target_field=target_field,
-        ),
-        remove_columns=dataset.column_names,
-        desc="Formatting instructions",
+    dataset = format_dataset(
+        dataset=dataset,
+        data_config=data_config,
+        tokenizer=tokenizer,
+        eos_token=eos_token,
+        target_field=target_field,
     )
 
     if eval_size and eval_size > 0 and not streaming:
