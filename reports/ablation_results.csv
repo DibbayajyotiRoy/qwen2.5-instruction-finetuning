@@ -1,0 +1,5 @@
+variant,raw_examples,curated_examples,retention_fraction,avg_tokens,median_tokens,avg_concision,median_concision,avg_quality_perplexity,median_quality_perplexity
+baseline,51760,51760,1.0,139.37,103.0,1.3774,1.2319,0.0,0.0
+concision_only,51760,12956,0.2503,123.14,88.0,1.1306,1.1369,0.0,0.0
+concision_plus_exact_dedup,51760,12955,0.2503,123.15,88.0,1.1306,1.1369,0.0,0.0
+concision_plus_near_dedup,51760,12955,0.2503,123.15,88.0,1.1306,1.1369,0.0,0.0
