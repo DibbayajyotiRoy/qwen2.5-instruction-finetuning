@@ -11,7 +11,15 @@ class DummyTokenizer:
     eos_token = "</s>"
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
-        return list(range(len(text.split())))
+        # Approximate BPE: one token per word plus an inter-word overhead so
+        # longer sentences get a higher tokens-per-word ratio.
+        words = text.split()
+        tokens: list[int] = []
+        for i, _word in enumerate(words):
+            tokens.append(i)
+            if i > 0:
+                tokens.append(i + len(words))
+        return tokens
 
 
 def test_concision_score() -> None:

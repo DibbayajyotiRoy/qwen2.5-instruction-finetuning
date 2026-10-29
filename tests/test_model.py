@@ -19,6 +19,10 @@ class DummyModel(torch.nn.Module):
         self.o_proj = torch.nn.Linear(32, 32)
         self.is_loaded_in_4bit = False
 
+    def prepare_inputs_for_generation(self, input_ids: torch.Tensor, **kwargs: dict) -> dict:
+        """HF-generation hook required by PEFT."""
+        return {"input_ids": input_ids}
+
 
 def test_count_trainable_parameters() -> None:
     """Test parameter counting utility."""
@@ -37,7 +41,7 @@ def test_build_lora_model(sample_lora_config) -> None:
     """Test LoRA adapter application on a dummy model."""
     model = DummyModel()
     lora_model = build_lora_model(model, sample_lora_config)
-    assert "lora" in str(type(lora_model)).lower()
+    assert "peft" in str(type(lora_model)).lower()
 
 
 def test_build_lora_model_4bit_prepare(sample_lora_config) -> None:

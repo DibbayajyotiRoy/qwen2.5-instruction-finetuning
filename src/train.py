@@ -41,7 +41,6 @@ def build_training_arguments(config: dict[str, Any]) -> TrainingArguments:
     return TrainingArguments(
         output_dir=str(output_dir / "checkpoints"),
         run_name=training_cfg.get("run_name"),
-        overwrite_output_dir=True,
         per_device_train_batch_size=training_cfg["per_device_train_batch_size"],
         per_device_eval_batch_size=training_cfg["per_device_eval_batch_size"],
         gradient_accumulation_steps=training_cfg["gradient_accumulation_steps"],
