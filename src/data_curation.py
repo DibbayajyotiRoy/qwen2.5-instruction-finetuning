@@ -127,9 +127,7 @@ def curate_dataset(
         tokens = tokenizer.encode(text, add_special_tokens=False)
         if len(tokens) < min_tokens_per_example:
             return False
-        if max_tokens_per_word is not None and ex["concision_score"] > max_tokens_per_word:
-            return False
-        return True
+        return not (max_tokens_per_word is not None and ex["concision_score"] > max_tokens_per_word)
 
     valid = scored.filter(is_valid, desc="Filtering degenerate examples")
 

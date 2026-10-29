@@ -12,7 +12,6 @@ from typing import Any
 
 import psutil
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from src.inference import generate_response
 from src.logging_utils import get_logger, setup_logging

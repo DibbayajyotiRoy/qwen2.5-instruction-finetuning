@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.data_curation import concision_score, curate_dataset
 
 
