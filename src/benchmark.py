@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, cast
 
 import psutil
 import torch
@@ -140,12 +140,15 @@ def benchmark_llamacpp(
     for _ in range(num_runs):
         start = time.perf_counter()
         for prompt in prompts:
-            output = model(
-                prompt,
-                max_tokens=max_tokens,
-                temperature=config.get("inference", {}).get("temperature", 0.7),
-                top_p=config.get("inference", {}).get("top_p", 0.9),
-                repeat_penalty=config.get("inference", {}).get("repetition_penalty", 1.0),
+            output = cast(
+                dict[str, Any],
+                model(
+                    prompt,
+                    max_tokens=max_tokens,
+                    temperature=config.get("inference", {}).get("temperature", 0.7),
+                    top_p=config.get("inference", {}).get("top_p", 0.9),
+                    repeat_penalty=config.get("inference", {}).get("repetition_penalty", 1.0),
+                ),
             )
             tokens_generated.append(output["usage"]["completion_tokens"])
         latencies.append(time.perf_counter() - start)
